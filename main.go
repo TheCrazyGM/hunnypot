@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -47,13 +48,16 @@ type cacheEntry struct {
 }
 
 type honeypotServer struct {
-	client   *api.Client
-	model    string
-	logger   *log.Logger
-	timeout  time.Duration
-	cacheMu  sync.RWMutex
-	cache    map[string]cacheEntry
-	cacheTTL time.Duration
+	client       *api.Client
+	model        string
+	logger       *log.Logger
+	timeout      time.Duration
+	cacheMu      sync.RWMutex
+	cache        map[string]cacheEntry
+	cacheTTL     time.Duration
+	maxCache     int
+	requestCount int64
+	startTime    time.Time
 }
 
 func main() {
@@ -65,12 +69,14 @@ func main() {
 	}
 
 	srv := &honeypotServer{
-		client:   client,
-		model:    envOrDefault("OLLAMA_MODEL", defaultModel),
-		logger:   logger,
-		timeout:  loadRequestTimeout(logger),
-		cache:    make(map[string]cacheEntry),
-		cacheTTL: loadCacheTTL(logger),
+		client:    client,
+		model:     envOrDefault("OLLAMA_MODEL", defaultModel),
+		logger:    logger,
+		timeout:   loadRequestTimeout(logger),
+		cache:     make(map[string]cacheEntry),
+		cacheTTL:  loadCacheTTL(logger),
+		maxCache:  loadMaxCache(logger),
+		startTime: time.Now(),
 	}
 
 	mux := http.NewServeMux()
@@ -108,6 +114,12 @@ func main() {
 }
 
 func (s *honeypotServer) handleRoot(w http.ResponseWriter, r *http.Request) {
+	// Set security headers
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-XSS-Protection", "1; mode=block")
+	w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+	
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -252,7 +264,11 @@ func selectProfile(requestPath string) payloadProfile {
 		kind:         "mysterious artifact",
 		contentType:  "text/plain; charset=utf-8",
 		instructions: "Return a text document resembling a secret memo or credentials list with playful absurdities. Do not add Markdown, explanations, or code fences.",
-		fallback:     `# Hunnypot Secret Scroll\n\naccess_token=HUNNY-` + uuid.New().String() + `\ncomment=Absolutely authentic. Bees love it.\n`,
+		fallback:     `# Hunnypot Secret Scroll
+
+access_token=HUNNY-` + uuid.New().String() + `
+comment=Absolutely authentic. Bees love it.
+`,
 	}
 
 	switch ext {
@@ -260,7 +276,11 @@ func selectProfile(requestPath string) payloadProfile {
 		profile.kind = ".env configuration"
 		profile.contentType = "text/plain; charset=utf-8"
 		profile.instructions = "Write environment variable pairs, each on its own line as KEY=VALUE. Include whimsical secrets. Provide only the raw .env content without Markdown or commentary."
-		profile.fallback = `# Winnie-approved environment\nAPI_KEY=HUNNY-` + uuid.New().String() + `\nDB_PASSWORD=beekeeperB@dge\nCOMMENT="beware dripping honey"\n`
+		profile.fallback = `# Winnie-approved environment
+API_KEY=HUNNY-` + uuid.New().String() + `
+DB_PASSWORD=beekeeperB@dge
+COMMENT="beware dripping honey"
+`
 	case ".json":
 		profile.kind = "JSON config"
 		profile.contentType = "application/json"
@@ -474,7 +494,7 @@ func (s *honeypotServer) lookupCache(key string) (string, bool) {
 }
 
 func (s *honeypotServer) storeCache(key, body string) {
-	if s.cacheTTL <= 0 {
+	if s.cacheTTL <= 0 || s.maxCache <= 0 {
 		return
 	}
 	entry := cacheEntry{
@@ -482,6 +502,42 @@ func (s *honeypotServer) storeCache(key, body string) {
 		expiry: time.Now().Add(s.cacheTTL),
 	}
 	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	
+	// Implement simple LRU eviction and stats
+	if len(s.cache) >= s.maxCache {
+		// Find oldest entry for eviction
+		var oldestKey string
+		var oldestTime time.Time
+		first := true
+		for k, v := range s.cache {
+			if first || v.expiry.Before(oldestTime) {
+				oldestKey = k
+				oldestTime = v.expiry
+				first = false
+			}
+		}
+		if oldestKey != "" {
+			delete(s.cache, oldestKey)
+			s.logger.Printf("[hunnypot] cache eviction: removed oldest entry %q", oldestKey)
+		}
+	}
 	s.cache[key] = entry
-	s.cacheMu.Unlock()
+	s.requestCount++
+}
+
+func loadMaxCache(logger *log.Logger) int {
+	val := strings.TrimSpace(os.Getenv("HUNNYPOT_MAX_CACHE"))
+	if val == "" {
+		return 1000
+	}
+	maxCache, err := strconv.Atoi(val)
+	if err != nil {
+		logger.Printf("invalid HUNNYPOT_MAX_CACHE %q, using default 1000: %v", val, err)
+		return 1000
+	}
+	if maxCache <= 0 {
+		return 1000
+	}
+	return maxCache
 }
