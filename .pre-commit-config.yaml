@@ -1,0 +1,18 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0 # Use the latest stable version
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+  - repo: https://github.com/tekwizely/pre-commit-golang
+    rev: v1.0.0-rc.4 # Use the latest stable version
+    hooks:
+      - id: go-fmt # Runs gofmt
+      - id: go-vet # Runs go vet
+        args: ['./...']
+        pass_filenames: false
+      - id: golangci-lint # Runs golangci-lint (requires golangci-lint installed)
+        args: ['run', './...']
+        pass_filenames: false

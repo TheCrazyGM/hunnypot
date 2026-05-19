@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"errors"
 	"fmt"
 	"log"
@@ -16,8 +17,6 @@ import (
 	"syscall"
 	"time"
 
-	_ "embed"
-
 	"github.com/google/uuid"
 	"github.com/ollama/ollama/api"
 )
@@ -26,8 +25,8 @@ import (
 var indexPage string
 
 const (
-	defaultModel          = "llama3.2"
-	defaultListenAddr     = ":8080"
+	defaultModel          = "granite4.1:3b"
+	defaultListenAddr     = ":12345"
 	defaultRequestTimeout = 45 * time.Second
 	defaultCacheTTL       = 30 * time.Second
 	maxResponseBytes      = 8192
@@ -119,7 +118,7 @@ func (s *honeypotServer) handleRoot(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-XSS-Protection", "1; mode=block")
 	w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-	
+
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -264,7 +263,7 @@ func selectProfile(requestPath string) payloadProfile {
 		kind:         "mysterious artifact",
 		contentType:  "text/plain; charset=utf-8",
 		instructions: "Return a text document resembling a secret memo or credentials list with playful absurdities. Do not add Markdown, explanations, or code fences.",
-		fallback:     `# Hunnypot Secret Scroll
+		fallback: `# Hunnypot Secret Scroll
 
 access_token=HUNNY-` + uuid.New().String() + `
 comment=Absolutely authentic. Bees love it.
@@ -421,10 +420,7 @@ func predictTokensForLimit(limit int) int {
 	if limit <= 0 {
 		return 256
 	}
-	approx := limit / 4
-	if approx < 128 {
-		approx = 128
-	}
+	approx := max(limit/4, 128)
 	if approx > 4096 {
 		approx = 4096
 	}
@@ -503,7 +499,7 @@ func (s *honeypotServer) storeCache(key, body string) {
 	}
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
-	
+
 	// Implement simple LRU eviction and stats
 	if len(s.cache) >= s.maxCache {
 		// Find oldest entry for eviction
